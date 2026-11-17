@@ -2,7 +2,7 @@
 
 
 
-GEIST RECOMPILED  v1.0.7
+## GEIST RECOMPILED  v1.0.7
 An unofficial, fan-made native PC port of Geist (GameCube, 2005)
 =====================================================================
 
@@ -12,7 +12,7 @@ trademark of Nintendo. This project is not affiliated with or endorsed by
 Nintendo or n-Space.
 
 ---------------------------------------------------------------------
-WHAT YOU NEED
+## WHAT YOU NEED
 ---------------------------------------------------------------------
   * Windows 10 or 11, 64-bit
   * A graphics card with OpenGL 3.3 (any GeForce GTX/RTX, Radeon HD 5000
