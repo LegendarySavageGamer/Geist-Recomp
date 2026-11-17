@@ -1,0 +1,83 @@
+diff --git a/runtime/mmu.cpp b/runtime/mmu.cpp
+index b5f1019..3257c6a 100644
+--- a/runtime/mmu.cpp
++++ b/runtime/mmu.cpp
+@@ -56,8 +56,16 @@ static void tlb_flush() {
+ void mmu_set_sdr1(uint32_t v) { g_sdr1 = v; tlb_flush(); }
+ extern "C" void hle_mtsr(CPU*, uint32_t sr, uint32_t v) { g_sr[sr & 15] = v; tlb_flush(); }
+ extern "C" uint32_t hle_mfsr(CPU*, uint32_t sr) { return g_sr[sr & 15]; }
++// tlbie on the 750 invalidates a congruence class, not one page: the TLB is 64 sets of two
++// ways, indexed by EA bits 14-19, and every translation in the named set goes -- only those
++// six bits of the operand matter. A game may rely on exactly that: pass just the set bits
++// (ea & 0x3F000) to drop whatever page sits in the set, or walk the 64 sets to flush the
++// whole TLB. So drop every software-TLB entry whose page falls in the same set, not only
++// the entry for the operand's page; dropping too many costs a page-table walk, keeping a
++// stale one lets the game read a frame it has already given away.
+ extern "C" void hle_tlbie(CPU*, uint32_t ea) {
+-    g_tlb[(ea >> 12) & (TLB_ENTRIES - 1)].store(0, std::memory_order_relaxed);
++    const uint32_t set = (ea >> 12) & 63;
++    for (uint32_t i = set; i < TLB_ENTRIES; i += 64) g_tlb[i].store(0, std::memory_order_relaxed);
+ }
+ 
+ // The hashed page table lookup, as the 750 does it: primary hash, then secondary.
+@@ -201,6 +209,9 @@ static void vector_run(CPU* c, uint32_t pc) {
+ // MSR bits an exception clears: EE PR FP FE0 SE BE FE1 IR DR.
+ static const uint32_t MSR_EXC_CLEAR = 0x8000 | 0x4000 | 0x2000 | 0x800 | 0x400 | 0x200 | 0x100 | 0x20 | 0x10;
+ 
++jmp_buf* exc_bind_current(CPU* c, uint32_t srr0);
++void exc_unbind(CPU* c);
++
+ static void deliver_dsi(uint32_t ea, uint32_t dsisr) {
+     CPU* c = cpu_current();
+     if (!c) fatal("MMU: no page for %08X (DSISR %08X) on a runtime thread, which cannot take the game's fault", ea, dsisr);
+@@ -209,8 +220,14 @@ static void deliver_dsi(uint32_t ea, uint32_t dsisr) {
+     c->spr[SPR_DSISR] = dsisr;
+     c->spr[SPR_SRR0] = c->lr;
+     c->spr[SPR_SRR1] = c->msr;
++    // The handler may end in an rfi (vector_run returns) or park this thread and resume it
++    // with OSLoadContext on the current context (we come back through the setjmp, with the
++    // CPU as it was at the fault). Either way the access is then retried by the caller.
++    jmp_buf* jb = exc_bind_current(c, c->lr);
++    if (jb && GCN_SETJMP(*jb) != 0) return;
+     c->msr &= ~MSR_EXC_CLEAR;
+     vector_run(c, 0x80000300);
++    if (jb) exc_unbind(c);
+ }
+ 
+ extern "C" uint32_t vm_translate(uint32_t ea, int write) {
+diff --git a/runtime/threads.cpp b/runtime/threads.cpp
+index 2e32d6e..dad7cd1 100644
+--- a/runtime/threads.cpp
++++ b/runtime/threads.cpp
+@@ -293,6 +293,31 @@ uint32_t dec_read(CPU* c) {
+ extern std::atomic<uint32_t> g_pi_intsr, g_pi_intmr;
+ extern std::atomic<uint64_t> g_next_event_at;
+ 
++// A synchronous exception (a DSI, say) whose handler does not always end in an rfi: it may
++// mark the current context as an exception context, park the thread while it waits for
++// something, and resume it later with OSLoadContext. Bind the current context to the
++// caller's resume point the way irq_deliver does, writing the context first as the handler
++// will (SRR0 being the link register here), so the binding's stamp matches what the
++// handler leaves. Returns the jmp_buf to GCN_SETJMP on, or null with no current context.
++// exc_unbind drops it again when the handler returned by rfi instead.
++jmp_buf* exc_bind_current(CPU* c, uint32_t srr0) {
++    uint32_t ctx = mem_r32(0x800000D4);  // OSCurrentContext
++    if (!ctx || (ctx & 0x3FFFFFFF) >= RAM_SIZE) return nullptr;
++    Binding* b = &g_bindings[ctx];
++    b->h = t_self;
++    b->kind = BIND_EXC;
++    b->snapshot = *c;
++    cpu_to_context(c, ctx, srr0);
++    binding_stamp(b, ctx);
++    return &b->jb;
++}
++
++void exc_unbind(CPU* c) {
++    uint32_t ctx = mem_r32(0x800000D4);
++    auto it = g_bindings.find(ctx);
++    if (it != g_bindings.end() && it->second.h == t_self && it->second.kind == BIND_EXC) it->second.kind = BIND_NONE;
++}
++
+ static void irq_deliver(CPU* c, uint32_t exc) {
+     uint32_t ctx = mem_r32(0x800000D4);  // OSCurrentContext
+     if (!ctx || (ctx & 0x3FFFFFFF) >= RAM_SIZE) fatal("interrupt with bad current context %08X (exc %u)", ctx, exc);

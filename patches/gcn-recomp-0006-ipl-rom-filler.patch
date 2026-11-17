@@ -1,0 +1,53 @@
+diff --git a/runtime/hw/exi.cpp b/runtime/hw/exi.cpp
+index f9e11b7..07d755f 100644
+--- a/runtime/hw/exi.cpp
++++ b/runtime/hw/exi.cpp
+@@ -1,4 +1,5 @@
+ // External Interface: IPL device (SRAM / RTC / UART). Memory cards: not present (yet).
++#include <vector>
+ #include "../runtime.h"
+ #include "../platform.h"
+ #include <ctime>
+@@ -49,6 +50,30 @@ static uint32_t rtc_now() {
+     return (uint32_t)(local - 946684800);
+ }
+ 
++// The IPL ROM (2 MB: boot code, the system fonts). No Nintendo ROM ships with the runtime;
++// a game project may supply contents of its own through ipl_set_rom_filler -- the fonts an
++// SDK's OSInitFont reads at 0x1AFF00 (Shift-JIS) and 0x1FCF00 (Windows-1252), say, rebuilt
++// from the game's own disc. The filler runs once, at the first ROM read, when the disc is
++// open. Anything it leaves alone reads as zero, as before.
++static const uint32_t IPL_ROM_SIZE = 2u << 20;
++static bool (*g_rom_filler)(std::vector<uint8_t>& rom);
++static std::vector<uint8_t> g_rom;
++static bool g_rom_filled;
++
++void ipl_set_rom_filler(bool (*filler)(std::vector<uint8_t>& rom)) { g_rom_filler = filler; }
++
++static uint8_t ipl_rom_byte(uint32_t off) {
++    if (!g_rom_filled) {
++        g_rom_filled = true;
++        if (g_rom_filler) {
++            g_rom.assign(IPL_ROM_SIZE, 0);
++            if (!g_rom_filler(g_rom)) g_rom.clear();
++            LOG(LOG_EXI, "IPL ROM: game filler %s", g_rom.empty() ? "supplied nothing" : "supplied contents");
++        }
++    }
++    return off < g_rom.size() ? g_rom[off] : 0;
++}
++
+ static uint8_t ipl_transfer_byte(uint8_t in) {
+     if (!g_ipl_have_cmd) {
+         g_ipl_addr = (g_ipl_addr << 8) | in;
+@@ -74,8 +99,9 @@ static uint8_t ipl_transfer_byte(uint8_t in) {
+             } else if (in) g_uart_line.push_back((char)in);
+         }
+     } else {
+-        // ROM (font etc.) - not provided
+-        if (g_ipl_pos == 0) LOG(LOG_EXI, "IPL ROM read at %08X (unsupported)", addr >> 6);
++        // ROM: the address is the byte offset << 6; each byte read advances one.
++        if (g_ipl_pos == 0) LOG(LOG_EXI, "IPL ROM read at %08X", addr >> 6);
++        if (!write) out = ipl_rom_byte((addr >> 6) + g_ipl_pos);
+     }
+     g_ipl_pos++;
+     return out;

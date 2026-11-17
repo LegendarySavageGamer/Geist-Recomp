@@ -1,0 +1,245 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a0a82b6..74afaf2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -401,7 +401,7 @@ function(gcn_add_game)
+   # front end, including the batch queue in gx/xf.cpp -- is free of both GL and SDL.
+   set(CORE_SOURCES ${RUNTIME_SOURCES})
+   list(REMOVE_ITEM CORE_SOURCES
+-    ${RT}/main.cpp ${RT}/input_map.cpp ${RT}/ffb.cpp ${RT}/audio.cpp ${RT}/audio_sdl.cpp ${RT}/png.cpp ${RT}/record.cpp
++    ${RT}/main.cpp ${RT}/disc_picker.cpp ${RT}/input_map.cpp ${RT}/ffb.cpp ${RT}/audio.cpp ${RT}/audio_sdl.cpp ${RT}/png.cpp ${RT}/record.cpp
+     ${RT}/gx/render_gl.cpp ${RT}/gx/gl_load.cpp ${RT}/gx/shadergen.cpp)
+   list(APPEND CORE_SOURCES ${RT}/audio_stub.cpp)
+   # The benchmark compiles the game's SOURCES too (gcn_add_game), and a game's eye hook
+@@ -479,7 +479,7 @@ function(gcn_add_game)
+   elseif(WIN32)
+     # opengl32 for the GL entry points, dbghelp to symbolize crash backtraces, ws2_32 for
+     # telemetry's socket.
+-    list(APPEND GCN_PLATFORM_LIBS opengl32 dbghelp ws2_32)
++    list(APPEND GCN_PLATFORM_LIBS opengl32 dbghelp ws2_32 comdlg32)
+   else()
+     find_package(OpenGL REQUIRED)
+     list(APPEND GCN_PLATFORM_LIBS OpenGL::GL)
+diff --git a/runtime/disc_picker.cpp b/runtime/disc_picker.cpp
+new file mode 100644
+index 0000000..9b40fd3
+--- /dev/null
++++ b/runtime/disc_picker.cpp
+@@ -0,0 +1,119 @@
++// First-run disc selection: the program ships with no game data, so when it finds no image
++// it asks the player for their own copy, checks that it is the disc this build was made
++// from, and remembers the choice in disc_path.txt beside the program.
++#include "disc_picker.h"
++#include "platform.h"
++#include <SDL.h>
++#include <cstdio>
++#include <cstring>
++#include <string>
++
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#include <commdlg.h>
++#define GCN_WIDEN2(x) L##x
++#define GCN_WIDEN(x) GCN_WIDEN2(x)
++#endif
++
++bool disc_is_expected(const std::string& p);
++
++namespace {
++
++const char* kRemember = "disc_path.txt";
++
++// The six-character disc ID at the start of a plain image, or of a CISO's first block.
++std::string disc_id(const std::string& path) {
++    FILE* f = fopen(path.c_str(), "rb");
++    if (!f) return {};
++    unsigned char h[8] = {};
++    std::string id;
++    if (fread(h, 1, 8, f) == 8) {
++        long at = 0;
++        if (!memcmp(h, "CISO", 4)) at = 0x8000;  // first stored block (holds the header)
++        unsigned char b[6];
++        if (fseek(f, at, SEEK_SET) == 0 && fread(b, 1, 6, f) == 6) id.assign((const char*)b, 6);
++    }
++    fclose(f);
++    return id;
++}
++
++bool good(const std::string& p) { return disc_is_expected(p); }
++
++std::string remembered() {
++    FILE* f = fopen(kRemember, "rb");
++    if (!f) return {};
++    char buf[4096] = {};
++    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
++    fclose(f);
++    std::string s(buf, n);
++    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
++    return s;
++}
++
++void remember(const std::string& p) {
++    if (FILE* f = fopen(kRemember, "wb")) {
++        fputs(p.c_str(), f);
++        fclose(f);
++    }
++}
++
++#ifdef _WIN32
++std::string browse() {
++    wchar_t file[4096] = L"";
++    OPENFILENAMEW ofn = {};
++    ofn.lStructSize = sizeof(ofn);
++    ofn.lpstrFilter = L"GameCube disc image (*.iso;*.ciso;*.gcm)\0*.iso;*.ciso;*.gcm\0All files\0*.*\0";
++    ofn.lpstrFile = file;
++    ofn.nMaxFile = 4096;
++    ofn.lpstrTitle = L"Select your own " GCN_WIDEN(GCN_GAME_TITLE) L" disc image";
++    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
++    if (!GetOpenFileNameW(&ofn)) return {};
++    char utf8[8192];
++    int n = WideCharToMultiByte(CP_UTF8, 0, file, -1, utf8, sizeof(utf8), nullptr, nullptr);
++    return n > 0 ? std::string(utf8) : std::string();
++}
++#endif
++
++int ask(const char* title, const char* text, const char* yes, const char* no) {
++    const SDL_MessageBoxButtonData buttons[] = {
++        {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, no},
++        {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, yes},
++    };
++    SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, nullptr, title, text, 2, buttons, nullptr};
++    int hit = 0;
++    if (SDL_ShowMessageBox(&box, &hit) != 0) return 0;
++    return hit;
++}
++
++}  // namespace
++
++bool disc_is_expected(const std::string& p) { return !p.empty() && plat_readable(p.c_str()) && disc_id(p) == GCN_DISC_ID; }
++
++std::string disc_pick(const char* given) {
++    if (given && good(given)) return given;
++    std::string r = remembered();
++    if (good(r)) return r;
++#ifdef _WIN32
++    const char* intro =
++        "No game data is included with this program.\n\n"
++        "Select a disc image of your own copy of " GCN_GAME_TITLE " (disc " GCN_DISC_ID ").\n"
++        "It is only read, never changed, and the location is remembered for next time.";
++    if (!ask(GCN_GAME_TITLE, intro, "Select disc image...", "Quit")) return {};
++    for (;;) {
++        std::string p = browse();
++        if (p.empty()) return {};
++        const std::string id = disc_id(p);
++        if (id == GCN_DISC_ID) {
++            remember(p);
++            return p;
++        }
++        std::string msg = "That file is not the right disc.\n\nExpected disc ID " GCN_DISC_ID ", found ";
++        msg += id.size() == 6 ? "\"" + id + "\"" : std::string("no GameCube disc header");
++        msg += ".\nCompressed .rvz/.gcz images must be converted to .iso first (Dolphin: right-click > Convert File).";
++        if (!ask(GCN_GAME_TITLE, msg.c_str(), "Choose another...", "Quit")) return {};
++    }
++#else
++    return given ? given : "";
++#endif
++}
+diff --git a/runtime/disc_picker.h b/runtime/disc_picker.h
+new file mode 100644
+index 0000000..fc91652
+--- /dev/null
++++ b/runtime/disc_picker.h
+@@ -0,0 +1,10 @@
++#pragma once
++#include <string>
++
++// The disc image to boot: `given` if it is the disc this build was recompiled from, else the
++// one remembered in disc_path.txt, else (Windows) the player is asked to pick their own copy.
++// Empty if there is none or the player declined.
++std::string disc_pick(const char* given);
++
++// Whether the file is readable and carries this build's disc ID (plain or CISO image).
++bool disc_is_expected(const std::string& path);
+diff --git a/runtime/main.cpp b/runtime/main.cpp
+index b959871..400f1c3 100644
+--- a/runtime/main.cpp
++++ b/runtime/main.cpp
+@@ -5,6 +5,7 @@
+ #include "input_script.h"
+ #include "input_log.h"
+ #include "input_map.h"
++#include "disc_picker.h"
+ #include "gx/render_gl.h"
+ #include "gx/gl.h"
+ #include "hw/pad.h"
+@@ -159,6 +160,14 @@ static uint8_t axis_to_u8(int v, bool invert) {
+ // share the pad with a headset's controllers (xr_desktop.cpp).
+ static void merge_desktop_pad(PadState& p) {
+     const uint8_t* k = SDL_GetKeyboardState(nullptr);
++    if (!input_map_defaults_on()) {  // controls.txt is the whole layout
++        input_map_apply(p);
++        static bool rumbling = false;
++        const bool motor = pad_motor(0);
++        if (motor || rumbling) input_map_rumble(motor);
++        rumbling = motor;
++        return;
++    }
+     if (k[SDL_SCANCODE_RETURN]) p.buttons |= PAD_START;
+     if (k[SDL_SCANCODE_X]) p.buttons |= PAD_A;
+     if (k[SDL_SCANCODE_Z]) p.buttons |= PAD_B;
+@@ -229,7 +238,11 @@ static bool pump_events() {
+         // A device controls.txt binds is the file's alone.
+         else if (e.type == SDL_CONTROLLERDEVICEADDED && !g_ctrl && !input_map_binds_index(e.cdevice.which))
+             g_ctrl = SDL_GameControllerOpen(e.cdevice.which);
+-        else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) running = false;
++        else if (e.type == SDL_CONTROLLERDEVICEREMOVED && g_ctrl && SDL_GameControllerFromInstanceID(e.cdevice.which) == g_ctrl) {
++            SDL_GameControllerClose(g_ctrl);  // unplugged: the next one to arrive takes over
++            g_ctrl = nullptr;
++        }
++        else if (e.type == SDL_KEYDOWN && input_map_quit_scancode() && e.key.keysym.scancode == (SDL_Scancode)input_map_quit_scancode()) running = false;
+     }
+     return running;
+ }
+@@ -246,6 +259,10 @@ int main(int argc, char** argv) {
+     // Default: the image the build was configured with, else the first image in ./rom
+     std::string iso_default = GCN_DEFAULT_ISO;
+     if (!plat_readable(iso_default.c_str())) iso_default = plat_find_file("rom", ".iso");
++    // Then beside the program and one folder up, so a game folder placed next to the image
++    // runs with a double-click.
++    if (iso_default.empty()) iso_default = plat_find_file(".", ".iso");
++    if (iso_default.empty()) iso_default = plat_find_file("..", ".iso");
+     if (iso_default.empty()) iso_default = plat_find_file("rom", ".ciso");
+     const char* iso = iso_default.c_str();
+     bool headless = false, hidden = false, input_log = true, first_person = false, fast = false, vr = false;
+@@ -301,10 +318,14 @@ int main(int argc, char** argv) {
+     }
+ #endif
+ 
+-    if (!plat_readable(iso)) {
++    // No game data ships with the program: find the player's own disc, or ask for it.
++    static std::string picked;
++    picked = disc_pick(iso);
++    if (picked.empty()) {
+         fprintf(stderr, "No game image found. Put your " GCN_GAME_TITLE " .iso or .ciso in rom/ or pass its path.\n");
+         return 1;
+     }
++    iso = picked.c_str();
+     mem_init();
+     timing_init();
+     if (fast) clock_set_scale(0);  // run as fast as the host allows; the game sees 60 Hz regardless
+@@ -349,6 +370,14 @@ int main(int argc, char** argv) {
+     // Joysticks are read without the window's focus: in --vr the headset has it, and a
+     // wheel or pedals have no reason to stop when another window is clicked.
+     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
++    // Controller face buttons by position on every brand: SDL's "a" is the bottom button on
++    // Xbox, PlayStation and Nintendo pads alike, so one controls.txt line fits them all.
++    SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
++    // DualSense/DualShock 4 rumble over Bluetooth too, and GameCube controller adapters
++    // through SDL's own driver where the system lets SDL open them.
++    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
++    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1");
++    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE, "1");
+     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) != 0) fatal("SDL_Init: %s", SDL_GetError());
+     input_map_load(controls);
+     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);

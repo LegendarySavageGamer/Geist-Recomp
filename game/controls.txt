@@ -1,0 +1,126 @@
+# =============================================================================
+#  GEIST (GeistNative) - CONTROLS
+#  Edit this file to make your own layout. Save it, then restart Geist.
+#  Lines starting with # are comments. Every line is:
+#
+#      <GameCube control> = <what you press>   [options]
+#
+#  Put several lines on the same GameCube control to give it more than one key or
+#  button: they all work at once (keyboard + mouse + every controller together).
+# =============================================================================
+
+# This file is the WHOLE layout. Nothing is hidden in the program.
+defaults = off
+
+# Esc doesn't close the game here (it's Start). Close with the window's X or Alt+F4.
+quit_key = none
+
+# The mouse is captured when you click in the game window. Esc or F3 lets go of it
+# (F2 opens the cheats menu).
+# (F1 opens the PC settings menu, which also lets go of the mouse. On a controller
+#  the menu is the Home / Guide / PS button, or click both sticks in together.)
+mouse_release_key = F3
+
+# -----------------------------------------------------------------------------
+#  GAMECUBE CONTROLS YOU CAN BIND
+#    A  B  X  Y  Z  start   dpad_up  dpad_down  dpad_left  dpad_right
+#    L  R                    (the triggers)
+#    stick_x  stick_y        main stick, a whole axis      (movement)
+#    stick_up stick_down stick_left stick_right   one direction (for keys)
+#    cstick_x cstick_y       C-stick, a whole axis         (camera / aim)
+#    cstick_up cstick_down cstick_left cstick_right
+#
+#  THINGS YOU CAN PRESS
+#    key <name>             W, Space, Return, Escape, Tab, "Left Shift", "Left Ctrl",
+#                           1, 2, F2, Up, Down, Left, Right ...  (names with spaces
+#                           go in quotes)
+#    mouse left | right | middle | x1 | x2        (x1/x2 = side buttons)
+#    mouse wheelup | wheeldown
+#    mouse x | mouse y      mouse movement (use gain to change sensitivity)
+#    pad <button>           ANY controller. Buttons are by POSITION, the same on
+#                           Xbox, PlayStation (DualSense/DualShock) and Nintendo
+#                           (Switch Pro, Joy-Con, GameCube) controllers:
+#                             a = bottom   b = right   x = left   y = top
+#                             (Xbox A/B/X/Y, PlayStation Cross/Circle/Square/Triangle)
+#                           leftshoulder rightshoulder leftstick rightstick
+#                           start back guide dpup dpdown dpleft dpright
+#                           misc1 (Switch capture / DualSense mic) paddle1-4 touchpad
+#    pad <axis>             leftx lefty rightx righty lefttrigger righttrigger
+#                           add + or - for one half: pad leftx+  (lefty+ is DOWN)
+#    pad2 <...>             only controller #2 (pad1, pad3, ... likewise)
+#
+#  OPTIONS (after what you press)
+#    invert                 flip an axis (put it on cstick_y for inverted look)
+#    gain <n>               sensitivity: 2 = twice as fast        (default 1)
+#    deadzone <0-1>         ignore small stick movement           (default 0.12)
+#    threshold <0-1>        how far a trigger/axis goes before it counts as pressed
+# =============================================================================
+
+
+# ============================  KEYBOARD + MOUSE  ==============================
+
+# Move (main stick)
+stick_up    = key W
+stick_down  = key S
+stick_left  = key A
+stick_right = key D
+
+# Look / aim (C-stick). Raise gain for faster mouse look, lower it for slower.
+cstick_x = mouse x gain 1.0
+cstick_y = mouse y gain 1.0
+# Inverted mouse look instead? Use:   cstick_y = mouse y gain 1.0 invert
+cstick_up    = key Up
+cstick_down  = key Down
+cstick_left  = key Left
+cstick_right = key Right
+
+# Triggers
+R = mouse left
+L = mouse right
+
+# Face buttons
+A = key Space
+B = key E
+X = key R
+Y = key Q
+Z = key F
+
+# Start / pause
+start = key Escape
+start = key Return
+
+# D-pad
+dpad_up    = key 1
+dpad_right = key 2
+dpad_down  = key 3
+dpad_left  = key 4
+dpad_up    = mouse wheelup
+dpad_down  = mouse wheeldown
+
+
+# ==================  CONTROLLERS (Xbox, DualSense, Switch, GameCube)  =========
+# Laid out like the GameCube pad: big A on the bottom, B to its left, X to its
+# right, Y on top, Z on the right bumper.
+
+stick_x  = pad leftx
+stick_y  = pad lefty invert
+cstick_x = pad rightx
+cstick_y = pad righty invert
+
+R = pad righttrigger
+L = pad lefttrigger
+
+A = pad a
+B = pad x
+X = pad b
+Y = pad y
+Z = pad rightshoulder
+Z = pad leftshoulder
+
+start = pad start
+start = pad back
+
+dpad_up    = pad dpup
+dpad_down  = pad dpdown
+dpad_left  = pad dpleft
+dpad_right = pad dpright

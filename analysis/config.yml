@@ -1,0 +1,6 @@
+object: ../orig/sys/main.dol
+hash: 6612f52ce6c50bb831ffddd5264b22973304f288
+symbols: symbols.txt
+splits: splits.txt
+detect_objects: true
+detect_strings: true

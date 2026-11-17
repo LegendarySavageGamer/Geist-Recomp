@@ -1,0 +1,5 @@
+# Bodies replaced by the gcn-recomp runtime. OSPanic is dead-stripped in this DOL.
+OSSaveContext
+OSLoadContext
+OSReport
+OSResetSystem

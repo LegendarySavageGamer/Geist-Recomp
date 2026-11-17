@@ -1,0 +1,17 @@
+# Separate compose project so it never touches other stacks (Sacred Forest, LA Online, ...).
+name: geist
+services:
+  geist-online-relay:
+    build: .
+    image: geist-online-relay:dev
+    container_name: geist-online-relay
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${GEIST_PUBLIC_PORT:-47720}:47720/udp"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }

@@ -1,0 +1,3 @@
+# Hand-identified SDK functions dtk left unnamed (GITE01 rev 0)
+8030FB88 OSGetCurrentContext   # lis r3,0x8000; lwz r3,0xD4(r3); blr
+8030FB94 OSSaveContext         # stmw r13,0x34(r3); saves GQR1..7

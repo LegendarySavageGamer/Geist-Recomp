@@ -1,0 +1,129 @@
+diff --git a/runtime/bench_main.cpp b/runtime/bench_main.cpp
+index 2e75cd6..d7ea57f 100644
+--- a/runtime/bench_main.cpp
++++ b/runtime/bench_main.cpp
+@@ -68,6 +68,8 @@ int main(int argc, char** argv) {
+ 
+     // Quiet: per-frame DVD logging would dominate the measurement.
+     for (auto& e : g_log_enabled) e = false;
++    // Diagnostics: GCN_BENCH_LOG=dvd,os turns chosen categories back on.
++    if (const char* l = getenv("GCN_BENCH_LOG")) log_enable_list(l);
+     plat_install_crash_handlers(on_interrupt, on_fault);
+ 
+     mem_init();
+diff --git a/runtime/hw/di.cpp b/runtime/hw/di.cpp
+index a8a215c..7c8a41e 100644
+--- a/runtime/hw/di.cpp
++++ b/runtime/hw/di.cpp
+@@ -8,6 +8,8 @@ static bool g_busy;
+ 
+ #include "dtk.h"
+ #include <algorithm>
++#include <cstdio>
++#include <cstdlib>
+ #include <vector>
+ 
+ // The image is a plain .iso, or a CISO: a 0x8000-byte header -- "CISO", a little-endian
+@@ -49,6 +51,43 @@ void di_init(const char* iso_path) {
+     }
+ }
+ 
++// Disc timing. By default a read lands in RAM the moment the game issues it and completes
++// after a short, fast "transfer", which keeps loading quick. A real drive seeks and streams:
++// nothing reaches RAM until well after the command, and a game can rely on that without
++// knowing it -- hand the drive a buffer it is still releasing (say, page frames another
++// thread is evicting) and the hardware's latency hides the race. di_set_timing (a game's
++// hook, or GCN_DVD_TIMING=<KB/s>,<seek us> to try it) delivers each read at its completion
++// instead, after a seek and at the given rate.
++static bool g_deliver_at_completion;
++static uint64_t g_bytes_per_sec = 64ull << 20, g_seek_us = 100;
++struct PendingRead { bool active; uint64_t offset; uint32_t dst, len; };
++static PendingRead g_pending;
++
++void di_set_timing(bool deliver_at_completion, uint32_t bytes_per_second, uint32_t seek_us) {
++    g_deliver_at_completion = deliver_at_completion;
++    if (bytes_per_second) g_bytes_per_sec = bytes_per_second;
++    g_seek_us = seek_us;
++}
++
++static void di_timing_from_env() {
++    static bool done;
++    if (done) return;
++    done = true;
++    if (const char* e = getenv("GCN_DVD_TIMING")) {
++        unsigned kbs = 0, seek = 0;
++        if (sscanf(e, "%u,%u", &kbs, &seek) >= 1 && kbs) di_set_timing(true, kbs * 1024u, seek);
++    }
++}
++
++static void dvd_deliver(uint64_t offset, uint32_t dst, uint32_t len) {
++    const uint32_t fit = dma_fit("DVD", dst, len);
++    debug_guest_check("before DVD read");
++    if (fit && !iso_read(offset, phys_ptr(dst), fit))
++        LOG(LOG_DVD, "read past end of image");
++    debug_guard_dma("DVD read", dst, len);
++    debug_guest_check("after DVD read");
++}
++
+ static void di_update_irq() {
+     bool irq = ((g_disr & 0x10) && (g_disr & 0x08)) || ((g_disr & 0x04) && (g_disr & 0x02)) ||
+                ((g_disr & 0x40) && (g_disr & 0x20)) || ((g_dicvr & 0x04) && (g_dicvr & 0x02));
+@@ -56,6 +95,10 @@ static void di_update_irq() {
+ }
+ 
+ static void di_complete() {
++    if (g_pending.active) {  // the data arrives as the transfer ends, as on the hardware
++        g_pending.active = false;
++        dvd_deliver(g_pending.offset, g_pending.dst, g_pending.len);
++    }
+     g_busy = false;
+     g_dicr &= ~1u;
+     g_disr |= 0x10;  // TCINT
+@@ -63,23 +106,20 @@ static void di_complete() {
+ }
+ 
+ static void di_execute() {
++    di_timing_from_env();
+     uint32_t cmd = g_cmd[0] >> 24;
+-    uint64_t delay = TB_FREQ / 10000;  // 100us base latency
++    uint64_t delay = TB_FREQ / 1000000 * g_seek_us;  // seek / command latency (100us by default)
+     switch (cmd) {
+     case 0xA8: {
+         uint32_t sub = (g_cmd[0] >> 16) & 0xFF;
+         uint64_t offset = sub == 0x40 ? 0 : (uint64_t)g_cmd[1] << 2;
+         uint32_t len = g_dilen;
+         LOG(LOG_DVD, "read off=%09llX len=%X -> %08X", (unsigned long long)offset, len, g_dimar);
+-        const uint32_t fit = dma_fit("DVD", g_dimar, len);
+-        debug_guest_check("before DVD read");
+-        if (fit && !iso_read(offset, phys_ptr(g_dimar), fit))
+-            LOG(LOG_DVD, "read past end of image");
+-        debug_guard_dma("DVD read", g_dimar, len);
+-        debug_guest_check("after DVD read");
++        if (g_deliver_at_completion) g_pending = {true, offset, g_dimar, len};
++        else dvd_deliver(offset, g_dimar, len);
+         g_dimar += len;
+         g_dilen = 0;
+-        delay += (uint64_t)len * TB_FREQ / (64 << 20);  // ~64MB/s
++        delay += (uint64_t)len * TB_FREQ / g_bytes_per_sec;  // ~64MB/s unless a game asks for the drive's pace
+         break;
+     }
+     case 0x12: {  // inquiry
+diff --git a/runtime/runtime.h b/runtime/runtime.h
+index 67e6472..82812d3 100644
+--- a/runtime/runtime.h
++++ b/runtime/runtime.h
+@@ -168,6 +168,14 @@ const char* func_containing(uint32_t addr, uint32_t* start);
+ // ---- hw modules ----
+ void vi_init(); uint16_t vi_read16(uint32_t off); void vi_write16(uint32_t off, uint16_t v);
+ void di_init(const char* iso_path); uint32_t di_read32(uint32_t off); void di_write32(uint32_t off, uint32_t v);
++// Disc timing for a game that depends on the drive's latency (see hw/di.cpp): deliver each
++// read when it completes rather than when it is issued, at `bytes_per_second` after
++// `seek_us`. Off by default; a game project's hook turns it on.
++void di_set_timing(bool deliver_at_completion, uint32_t bytes_per_second, uint32_t seek_us);
++// IPL ROM contents a game project supplies (see hw/exi.cpp): called once, at the first ROM
++// read, with a zeroed 2 MB image to fill; return false to leave the ROM reading as zeros.
++#include <vector>
++void ipl_set_rom_filler(bool (*filler)(std::vector<uint8_t>& rom));
+ void si_init(); uint32_t si_read32(uint32_t off); void si_write32(uint32_t off, uint32_t v);
+ void exi_init(); uint32_t exi_read32(uint32_t off); void exi_write32(uint32_t off, uint32_t v);
+ void ai_init(); uint32_t ai_read32(uint32_t off); void ai_write32(uint32_t off, uint32_t v);

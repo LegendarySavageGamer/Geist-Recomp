@@ -1,0 +1,7 @@
+build/
+orig/
+gcn-recomp/
+*.iso
+*.ciso
+*.dol
+server/.env

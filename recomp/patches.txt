@@ -1,0 +1,23 @@
+# Geist-specific instruction patches (GITE01 rev 0). Each is explained in docs/dev/mmu.md.
+
+# MMU bring-up (fn_80340CA4 -> fn_80340CF8 -> fn_80340D10) loads SDR1 and uses rfi to turn on
+# MSR[IR|DR]. Each rfi targets its own fall-through: "set MSR, continue".
+80340D0C c->msr = c->spr[27]; fn_80340D10(c); RET();
+80340D34 c->msr = c->spr[27]; RET();
+
+# DSI handler fn_80340EBC (virtual window 0x7E000000-0x7FFFFFFF): after parking r3-r6/CR it
+# rfi's forward into its own context-save tail at 0x80340FB0 with translation on.
+80340F90 c->msr = c->spr[27]; goto L_80340FB0;
+
+# Cheats (the F2 menu; ids from src/geist_cheats.cpp). Each takes the place of the
+# subtraction that spends the value, as the player's Action Replay codes do.
+# Infinite Health (0): fsubs f0,f0,f31 before the health is stored.
+8005EFA8 { extern int gcn_cheat_on(int); if (!gcn_cheat_on(0)) { double v = (double)(float)(c->f[0].d - c->f[31].d); c->f[0].d = v; c->ps1[0] = v; c->fprf_v = v; c->fprf_pending = 2; } }
+# Infinite Ammo (1): subf r0,r30,r0 before the count is stored.
+800F8390 { extern int gcn_cheat_on(int); if (!gcn_cheat_on(1)) c->r[0] = c->r[0] - c->r[30]; }
+# Infinite Boost (2): fsubs f1,f2,f1, then the old value (f2) is stored back instead.
+80243EA0 { extern int gcn_cheat_on(int); if (!gcn_cheat_on(2)) { double v = (double)(float)(c->f[2].d - c->f[1].d); c->f[1].d = v; c->ps1[1] = v; c->fprf_v = v; c->fprf_pending = 2; } }
+80243EA4 { extern int gcn_cheat_on(int); uint32_t ea = (c->r[30] + (uint32_t)9856); STF32(ea, gcn_cheat_on(2) ? c->f[2].d : c->f[1].d); }
+# Infinite Time (3): fsubs f0,f2,f0, then the old value (f2) is stored back instead.
+8020DA28 { extern int gcn_cheat_on(int); if (!gcn_cheat_on(3)) { double v = (double)(float)(c->f[2].d - c->f[0].d); c->f[0].d = v; c->ps1[0] = v; c->fprf_v = v; c->fprf_pending = 2; } }
+8020DA2C { extern int gcn_cheat_on(int); uint32_t ea = (c->r[25] + (uint32_t)16); STF32(ea, gcn_cheat_on(3) ? c->f[2].d : c->f[0].d); }

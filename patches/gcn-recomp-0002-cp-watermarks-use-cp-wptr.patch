@@ -1,0 +1,21 @@
+diff --git a/runtime/gx/fifo.cpp b/runtime/gx/fifo.cpp
+index 2554cbb..63435d2 100644
+--- a/runtime/gx/fifo.cpp
++++ b/runtime/gx/fifo.cpp
+@@ -474,7 +474,15 @@ static void cp_watermarks() {
+     if (!(g_cp_cr & CP_CR_LINK)) return;
+     uint32_t base = g_cp_base & 0x03FFFFE0, end = cp_end_excl();
+     if (!end || end <= base) return;
+-    uint32_t wptr = pi_fifo_wptr() & 0x03FFFFE0, r = g_cp_rptr & 0x03FFFFE0;
++    // The distance is the CP's: from its read pointer to its own write pointer, which moves
++    // only with a burst out of the gather pipe (cp_follow_pi), as the hardware's
++    // CP_RW_DISTANCE counts bursts in and reads out. Not from the PI's write pointer: a
++    // game that re-points its FIFO with GXSetCPUFifo and then GXSetGPFifo links the CPU to
++    // the new write pointer one call before the GP's pointers are reset, and measured from
++    // the PI the drained FIFO looked a lap behind -- above the high mark. The overflow
++    // interrupt suspended the writing thread, and with nothing left for the GP to read, the
++    // underflow that resumes it never came.
++    uint32_t wptr = g_cp_wptr & 0x03FFFFE0, r = g_cp_rptr & 0x03FFFFE0;
+     if (r < base || r >= end) r = base;
+     if (wptr < base || wptr >= end) return;
+     uint32_t d = wptr >= r ? wptr - r : (end - r) + (wptr - base);

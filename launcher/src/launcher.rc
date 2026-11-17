@@ -1,0 +1,23 @@
+1 ICON "../assets/geist_launcher.ico"
+1 VERSIONINFO
+FILEVERSION 1,0,7,0
+PRODUCTVERSION 1,0,7,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "ThyHeroOfTime"
+      VALUE "FileDescription", "Geist Recompiled Launcher"
+      VALUE "FileVersion", "1.0.7"
+      VALUE "ProductName", "Geist Recompiled (unofficial fan PC port)"
+      VALUE "ProductVersion", "1.0.7"
+      VALUE "LegalCopyright", "Launcher (c) ThyHeroOfTime. Geist is a trademark of Nintendo. No game data included."
+      VALUE "OriginalFilename", "GeistLauncher.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
