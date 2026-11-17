@@ -1,10 +1,6 @@
 <img width="1672" height="941" alt="Neon Geist_ Recompiled PC Port" src="https://github.com/user-attachments/assets/c5321b54-3f21-4d28-ae8d-fe02e7c839ec" />
 
 
-
-## GEIST RECOMPILED  v1.0.7
-![Geist: Recompiled PC Port](https://github.com/user-attachments/assets/c5321b54-3f21-4d28-ae8d-fe02e7c839ec)
-
 # GEIST: RECOMPILED
 ### Version 1.0.7 | Native Windows PC Port
 
