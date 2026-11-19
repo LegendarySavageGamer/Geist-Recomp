@@ -2,7 +2,7 @@
 
 
 # GEIST: RECOMPILED
-### Version 1.0.7 | Native Windows PC Port
+Is A Native Windows PC Port
 
 **Experience the GameCube cult classic Geist on PC!**
 
