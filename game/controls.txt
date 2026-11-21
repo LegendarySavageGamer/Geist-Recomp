@@ -1,6 +1,6 @@
 # =============================================================================
 #  GEIST (GeistNative) - CONTROLS
-#  Edit this file to make your own layout. Save it, then restart Geist.
+#  Edit this file to make your own layout. Save it; Geist reloads the layout automatically.
 #  Lines starting with # are comments. Every line is:
 #
 #      <GameCube control> = <what you press>   [options]
@@ -11,6 +11,9 @@
 
 # This file is the WHOLE layout. Nothing is hidden in the program.
 defaults = off
+mouse_native = 1
+mouse_raw = 1
+mouse_smoothing = 0
 
 # Esc doesn't close the game here (it's Start). Close with the window's X or Alt+F4.
 quit_key = none
@@ -124,3 +127,6 @@ dpad_up    = pad dpup
 dpad_down  = pad dpdown
 dpad_left  = pad dpleft
 dpad_right = pad dpright
+
+# 2.00: L on the keyboard (in a body the right mouse button throws a grenade)
+L = key C

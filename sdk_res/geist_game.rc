@@ -1,15 +1,16 @@
 1 ICON "geist.ico"
 1 VERSIONINFO
-FILEVERSION 1,0,7,0
-PRODUCTVERSION 1,0,7,0
+FILEVERSION 1,1,1,0
+PRODUCTVERSION 1,1,1,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
     BLOCK "040904B0"
     BEGIN
       VALUE "FileDescription", "Geist Recompiled"
+      VALUE "FileVersion", "1.1.1"
       VALUE "ProductName", "Geist Recompiled (unofficial fan PC port, built from your own disc)"
-      VALUE "ProductVersion", "1.0.7"
+      VALUE "ProductVersion", "1.1.1"
       VALUE "OriginalFilename", "Geist.exe"
     END
   END

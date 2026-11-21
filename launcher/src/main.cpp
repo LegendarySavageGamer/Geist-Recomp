@@ -1,4 +1,4 @@
-// Geist Recompiled Launcher v1.0.0
+// Geist Recompiled Launcher v2.0.0
 //
 // Builds Geist.exe on the player's PC from their own legally dumped disc (builder.h) and
 // starts it. Ships no game code or data. Layout follows the project's reference: title at
@@ -6,6 +6,7 @@
 // bottom, art filling the window.
 #include <SDL.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -20,6 +21,10 @@
 #include "builder.h"
 #include "gci_import.h"
 #include "proc.h"
+#include "bug_report.h"
+#include "../../gcn-recomp/runtime/controls_editor.h"
+#include "../../gcn-recomp/runtime/controls_defaults.h"
+#include "pc_options.h"
 #include "ui.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -34,7 +39,8 @@
 #endif
 
 namespace fs = std::filesystem;
-static const char* kVersion = "1.0.7";
+static const char* kVersion = "2.0.0";
+static const char* kVersionLabel = "2.00";  // as the launcher art shows it
 static const int W = 1280, H = 720;
 
 // ------------------------------------------------------------------------- palette
@@ -110,7 +116,7 @@ static std::string pick_gci_file() {
 }
 
 // ------------------------------------------------------------------------- app state
-enum class Screen { Main, Settings, Credits, Building, Message };
+enum class Screen { Main, Report, Controls, Options, Settings, Credits, Building, Message };
 
 struct Button {
     std::string label;
@@ -118,6 +124,7 @@ struct Button {
     std::vector<SDL_FPoint> shape;
     float x, y, w, h;
     bool primary = false;
+    bool skin = false;  // painted into the skin image: only light it up
 };
 
 struct App {
@@ -129,6 +136,10 @@ struct App {
     int bg_w = 0, bg_h = 0;
     BuildPaths paths;
     Settings settings;
+    BugReportForm report;
+    controls::Editor controls;
+    PcOptions options;
+    bool controls_ignore_release=false;
     Screen screen = Screen::Main;
     int focus = 0;
     float mx = -1, my = -1;
@@ -157,6 +168,8 @@ struct App {
     bool skin = false;
     struct Art { SDL_Texture* tex = nullptr; int w = 0, h = 0; };
     std::map<std::string, Art> art;  // settings / credits / building wallpapers
+    std::vector<Art> slides;         // assets/slides/*: the slideshow shown while Geist builds
+    float slide_t = 0;               // seconds into the slideshow
     float art_fade = 0;              // 0..1, fades in when a panel opens
     std::string art_key;
     SDL_FRect skin_min{}, skin_max{}, skin_close{};
@@ -348,6 +361,7 @@ static int chrome_hover(float mx, float my) {
 
 static void draw_header(App& a) {
     // The window's own header, top left: icon and name (the window is borderless).
+    if (a.skin) return;  // the skin's art carries the title
     if (a.icon) {
         SDL_FRect d = {12, 7, 26, 26};
         SDL_RenderCopyF(a.r, a.icon, nullptr, &d);
@@ -379,21 +393,20 @@ static void draw_chrome(App& a) {
 static bool draw_button(App& a, const Button& b, bool focused, bool enabled = true) {
     SDL_Renderer* r = a.r;
     bool hover = ui::point_in(b.shape, a.mx, a.my);
-    bool hot = (hover || focused) && enabled;
-    if (b.icon >= 0 && a.skin) {  // a button painted into the skin
-        if (!enabled) { ui::poly(r, b.shape, {2, 6, 16, 120}); return false; }
-        if (hot) {
-            SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_ADD);
-            ui::poly(r, b.shape, {40, 120, 255, 46});
-            SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    if (b.skin) {
+        // The art already draws the button: light it up when it is under the mouse or has
+        // the keyboard / controller focus, and leave it exactly as painted otherwise.
+        if ((hover || focused) && enabled) {
+            ui::poly(r, b.shape, {90, 190, 255, 34});
             for (size_t i = 0; i < b.shape.size(); i++) {
                 auto& p = b.shape[i];
                 auto& q = b.shape[(i + 1) % b.shape.size()];
-                ui::glow_line(r, p.x, p.y, q.x, q.y, 2, {120, 210, 255, 220});
+                ui::glow_line(r, p.x, p.y, q.x, q.y, 2, {120, 220, 255, 230});
             }
         }
-        return hover;
+        return hover && enabled;
     }
+    bool hot = (hover || focused) && enabled;
     Color fill = b.primary ? Color{14, 70, 140, (Uint8)(hot ? 235 : 200)} : Color{8, 26, 52, (Uint8)(hot ? 230 : 190)};
     if (hot) for (auto& p : b.shape) ui::glow(r, p.x, p.y, 40, {60, 160, 255, 30});
     ui::poly(r, b.shape, fill);
@@ -425,7 +438,7 @@ static void draw_status_bar(App& a) {
         ui::hgradient(r, 0, H - 48, W, 1, {70, 150, 255, 160}, {70, 150, 255, 20});
         ui::line(r, 162, H - 34, 162, H - 14, 1, {90, 120, 160, 160});
     }
-    a.small.draw(r, std::string("Version ") + kVersion, a.skin_version.x, a.skin_version.y, kTextDim);
+    a.small.draw(r, std::string("Version ") + kVersionLabel, a.skin_version.x, a.skin_version.y, kTextDim);
     float cx = a.skin_icon.x, cy = a.skin_icon.y;
     Color c = a.status_ok ? kCyan : kBad;
     ui::arc(r, cx, cy, 10, 0, 6.2832f, 2, c);
@@ -484,6 +497,36 @@ static void draw_panel_art(App& a, const char* key, float dt) {
         SDL_SetTextureAlphaMod(art.tex, (Uint8)(255 * alpha));
         SDL_RenderCopyF(a.r, art.tex, &sr, &dr);
     }
+}
+
+// While Geist builds: the slides, one after another on the right of the window, each held
+// for a while with a slow push-in and cross-faded into the next.
+static void draw_slideshow(App& a, float dt) {
+    if (a.slides.empty()) return;
+    // A dark stage behind the slides, feathered into the menu art on the left, so each
+    // image stands on its own instead of over the launcher's artwork.
+    ui::hgradient(a.r, 400, 0, 160, H - 48, {2, 7, 18, 0}, {2, 7, 18, 238});
+    ui::rect(a.r, 560, 0, W - 560, H - 48, {2, 7, 18, 238});
+    const float hold = 7.0f, fade = 1.6f, period = hold + fade;
+    a.slide_t += dt;
+    const int n = (int)a.slides.size();
+    const int cur = (int)(a.slide_t / period) % n, next = (cur + 1) % n;
+    const float into = std::fmod(a.slide_t, period);
+    const float rx = 420, ry = 8, rw = W - rx - 16, rh = H - 48 - 12 - 232 - 16;  // above the build panel
+    auto draw = [&](const App::Art& s, float age, float alpha) {
+        if (alpha <= 0.0f) return;
+        const float zoom = 1.0f + 0.05f * std::min(1.0f, age / period);
+        float sc = std::min(rw / s.w, rh / s.h) * zoom;
+        float dw = s.w * sc, dh = s.h * sc;
+        SDL_FRect d = {rx + (rw - dw) / 2, ry + (rh - dh) / 2, dw, dh};
+        SDL_SetTextureAlphaMod(s.tex, (Uint8)(255 * alpha));
+        SDL_RenderCopyF(a.r, s.tex, nullptr, &d);
+    };
+    // smoothstep cross-fade during the last `fade` seconds of each slide
+    float u = into > hold ? (into - hold) / fade : 0.0f;
+    u = u * u * (3 - 2 * u);
+    draw(a.slides[cur], into, 1.0f - u);
+    if (u > 0.0f) draw(a.slides[next], into - hold, u);
 }
 
 static void draw_panel(App& a, float x, float y, float w, float h, const std::string& heading) {
@@ -595,9 +638,11 @@ static std::vector<SettingRow> settings_rows(App& a) {
     std::string disc = a.settings.iso.empty() ? "Not selected" : a.settings.iso;
     bool built = game_is_built(a.paths, a.settings.iso);
     return {
+        {"Graphics", "Display, widescreen, resolution and filtering", 7},
+        {"Audio", "Master volume, music, voices and effects", 8},
         {"Game disc", disc, 0},
         {"Geist.exe", built ? "Built and ready" : "Not built yet", 1},
-        {"Controls", "Edit controls.txt (keyboard, mouse, controllers)", 2},
+        {"Controls", "Configure keyboard, mouse and controllers", 2},
         {"Game folder", a.paths.game, 3},
         {"Build log", "work/build.log", 4},
         {"Close launcher when Geist starts", a.settings.close_on_launch ? "On" : "Off", 5},
@@ -611,7 +656,7 @@ static void settings_action(App& a, int action) {
     case 1:
         if (ensure_disc(a, false)) { a.launch_after_build = false; start_build(a); }
         break;
-    case 2: proc_open_with_shell(controls_path(a)); break;
+    case 2: a.controls.open(controls_path(a),controls::factory); a.screen=Screen::Controls; break;
     case 3: { std::error_code ec; fs::create_directories(fs::u8path(a.paths.game), ec); proc_open_with_shell(a.paths.game); break; }
     case 4: proc_open_with_shell((fs::u8path(a.paths.work) / "build.log").u8string()); break;
     case 5: a.settings.close_on_launch = !a.settings.close_on_launch; a.settings.save(); break;
@@ -624,6 +669,7 @@ static void settings_action(App& a, int action) {
         else show_message(a, "Could not import the save", err, Screen::Settings);
         break;
     }
+    case 7:case 8:{std::error_code ec;fs::create_directories(fs::u8path(a.paths.game),ec);a.options.open((fs::u8path(a.paths.game)/"settings.ini").u8string(),action==8);a.screen=Screen::Options;break;}
     }
 }
 
@@ -646,17 +692,18 @@ static bool skin_point(const char* key, float sx, float sy, SDL_FPoint& p) {
 
 static void layout_main(App& a) {
     a.main_buttons.clear();
+    const char* labels[] = {"Play", "Report a Bug", "Settings", "Credits", "Exit"};
     if (a.skin) {
+        // The skin image paints the five buttons; skin.ini says where, in its own pixels.
         const float sx = (float)W / a.bg_w, sy = (float)H / a.bg_h;
-        const char* keys[] = {"play", "settings", "credits", "exit"};
-        const char* labels[] = {"Play", "Settings", "Credits", "Exit"};
+        const char* keys[] = {"play", "report", "settings", "credits", "exit"};
         bool ok = true;
-        for (int i = 0; i < 4 && ok; i++) {
+        for (int i = 0; i < 5 && ok; i++) {
             float x0, y0, x1, y1;
             ok = skin_rect(keys[i], sx, sy, x0, y0, x1, y1);
             if (!ok) break;
             Button b;
-            b.label = labels[i]; b.icon = i; b.primary = i == 0;
+            b.label = labels[i]; b.icon = -1; b.primary = i == 0; b.skin = true;
             b.x = x0; b.y = y0; b.w = x1 - x0; b.h = y1 - y0;
             b.shape = hex_button(b.x, b.y, b.w, b.h);
             a.main_buttons.push_back(b);
@@ -672,16 +719,15 @@ static void layout_main(App& a) {
         a.skin = false;  // incomplete skin.ini: fall back to the built-in look
         a.main_buttons.clear();
     }
-    const char* labels[] = {"Play", "Settings", "Credits", "Exit"};
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         Button b;
         b.label = labels[i];
-        b.icon = i;
+        b.icon = i==0?0:i==1?-1:i-1;
         b.primary = i == 0;
-        b.w = i == 0 ? 340 : 318;
-        b.h = i == 0 ? 70 : 60;
-        b.x = i == 0 ? 52 : 64;
-        b.y = 252 + i * 84 + (i ? 10 : 0);
+        b.w = 325;
+        b.h = 52;
+        b.x = 51;
+        b.y = 260 + i * 62;
         b.shape = hex_button(b.x, b.y, b.w, b.h);
         a.main_buttons.push_back(b);
     }
@@ -690,9 +736,10 @@ static void layout_main(App& a) {
 static void activate_main(App& a, int i) {
     switch (i) {
     case 0: on_play(a); break;
-    case 1: a.screen = Screen::Settings; a.focus = 0; break;
-    case 2: a.screen = Screen::Credits; a.focus = 0; break;
-    case 3: a.running = false; break;
+    case 1: a.report.open(a.paths.root, kVersion); a.screen = Screen::Report; break;
+    case 2: a.screen = Screen::Settings; a.focus = 0; break;
+    case 3: a.screen = Screen::Credits; a.focus = 0; break;
+    case 4: a.running = false; break;
     }
 }
 
@@ -709,6 +756,7 @@ static void frame(App& a, bool click, int nav, bool enter, bool back) {
     SDL_Renderer* r = a.r;
     draw_background(a);
     draw_title(a);
+    if (!a.skin) ui::rect(r, 35, 250, 365, 335, {3, 13, 30, 255});
 
     if (a.build_done.exchange(false)) {
         if (a.build_ok) {
@@ -740,6 +788,52 @@ static void frame(App& a, bool click, int nav, bool enter, bool back) {
         if (back) a.running = false;
         break;
     }
+    case Screen::Report: {
+        for (int i=0;i<(int)a.main_buttons.size();++i) draw_button(a,a.main_buttons[i],i==1,false);
+        if (a.report.draw(r,a.heading,a.body,a.small,a.mx,a.my,click,nav,enter,back)) {
+            a.screen=Screen::Main; a.focus=1;
+        }
+        break;
+    }
+    case Screen::Controls: {
+        draw_panel(a,472,96,770,540,"CONTROLS");
+        for(int i=0;i<(int)a.main_buttons.size();++i)draw_button(a,a.main_buttons[i],i==2,false);
+        auto& ed=a.controls;auto cells=controls::layout(ed);
+        if(nav)ed.focus=(ed.focus+nav+(int)cells.size())%(int)cells.size();
+        for(int i=0;i<(int)cells.size();++i){auto& c=cells[i];float x=512+c.x,y=172+c.y;
+            bool hover=a.mx>=x&&a.mx<x+c.w&&a.my>=y&&a.my<y+c.h;
+            if(hover)ed.focus=i;bool hot=ed.focus==i||c.binding==ed.selected;
+            ui::rect(r,x,y,c.w,c.h,hot?Color{35,95,170,210}:Color{10,30,60,220});
+            if(c.slider){ui::rect(r,x+8,y+c.h-5,c.w-16,3,kTextDim);ui::rect(r,x+8+(c.w-16)*controls::slider_fraction(ed)-3,y+c.h-9,6,11,kCyan);}
+            a.small.draw(r,shorten_path(a.small,c.label,c.w-16),x+8,y+21,hot?kCyan:kText);
+            if(!ed.capturing&&!ed.conflict){if(c.slider&&hover&&(click||(SDL_GetMouseState(nullptr,nullptr)&SDL_BUTTON_LMASK)))controls::set_slider(ed,(a.mx-x-8)/(c.w-16));else if((hover&&click)||(ed.focus==i&&enter))controls::activate(ed,c);}
+        }
+        std::string s=(ed.dirty()?"Unsaved changes. ":"")+ed.status;
+        if(ed.capturing)s="PRESS A KEY OR BUTTON TO ASSIGN. Esc cancels.";
+        a.small.draw(r,shorten_path(a.small,s,690),512,620,kCyan);
+        if(back&&!ed.capturing&&!ed.conflict)ed.command(controls::Editor::Cancel);
+        if(ed.closed){a.screen=Screen::Settings;a.focus=2;}
+        break;
+    }
+    case Screen::Options: {
+        draw_panel(a,472,96,770,540,a.options.audio?"AUDIO":"GRAPHICS & PERFORMANCE");
+        for(int i=0;i<(int)a.main_buttons.size();++i)draw_button(a,a.main_buttons[i],i==2,false);
+        auto& o=a.options;int count=(int)o.options.size();if(nav)o.focus=(o.focus+nav+count+4)%(count+4);
+        float spacing=std::min(40.f,340.f/std::max(1,count));
+        for(int i=0;i<count;++i){float y=175+i*spacing;bool hover=a.mx>=505&&a.mx<=1205&&a.my>=y&&a.my<y+spacing-2;if(hover)o.focus=i;bool hot=o.focus==i;
+            if(hot)ui::rect(r,505,y,700,spacing-2,{40,110,210,60});
+            a.body.draw(r,o.options[i].label,515,y+spacing*.72f,kText);
+            a.small.draw(r,shorten_path(a.small,o.value(i),340),845,y+spacing*.72f,hot?kCyan:kTextDim);
+            if((hover&&click)||(hot&&enter))o.change(i,1);
+        }
+        a.small.draw(r,shorten_path(a.small,o.status,690),510,545,kTextDim);
+        auto defaults=make_btn("Defaults",510,566,150,44),apply=make_btn("Apply",675,566,110,44),save=make_btn("Save & back",805,566,180,44),cancel=make_btn("Cancel",1015,566,180,44);
+        if((draw_button(a,defaults,o.focus==count)&&click)||(o.focus==count&&enter))o.restore();
+        if((draw_button(a,apply,o.focus==count+1)&&click)||(o.focus==count+1&&enter))o.save();
+        if((draw_button(a,save,o.focus==count+2)&&click)||(o.focus==count+2&&enter)){if(o.save()){a.screen=Screen::Settings;a.focus=0;}}
+        if((draw_button(a,cancel,o.focus==count+3)&&click)||(o.focus==count+3&&enter)||back){a.screen=Screen::Settings;a.focus=0;}
+        break;
+    }
     case Screen::Settings: {
         float px = 472, py = 96, pw = 770, ph = 540;
         draw_panel_art(a, "settings_art", a.dt);
@@ -748,16 +842,16 @@ static void frame(App& a, bool click, int nav, bool enter, bool back) {
         int n = (int)rows.size() + 1;  // + Back
         if (nav) a.focus = (a.focus + nav + n) % n;
         for (int i = 0; i < (int)rows.size(); i++) {
-            float ry = py + 88 + i * 52;
-            bool hover = a.mx > px + 20 && a.mx < px + pw - 20 && a.my > ry && a.my < ry + 48;
+            float ry = py + 76 + i * 40;
+            bool hover = a.mx > px + 20 && a.mx < px + pw - 20 && a.my > ry && a.my < ry + 38;
             if (hover) a.focus = i;
             bool hot = a.focus == i;
-            if (hot) ui::rect(r, px + 24, ry, pw - 48, 48, {40, 110, 210, 60});
-            if (hot) ui::rect(r, px + 24, ry, 3, 48, kCyan);
-            a.body.draw(r, rows[i].label, px + 40, ry + 20, kText);
+            if (hot) ui::rect(r, px + 24, ry, pw - 48, 38, {40, 110, 210, 60});
+            if (hot) ui::rect(r, px + 24, ry, 3, 38, kCyan);
+            a.body.draw(r, rows[i].label, px + 40, ry + 16, kText);
             Color vc = rows[i].action == 1 ? (rows[i].value[0] == 'B' ? kGood : kTextDim) : kTextDim;
-            a.small.draw(r, shorten_path(a.small, rows[i].value, pw - 300), px + 40, ry + 40, vc);
-            const char* act[] = {"Change...", "Rebuild", "Open", "Open", "Open", "Toggle", "Import..."};
+            a.small.draw(r, shorten_path(a.small, rows[i].value, pw - 300), px + 40, ry + 34, vc);
+            const char* act[] = {"Change...", "Rebuild", "Open", "Open", "Open", "Toggle", "Import...", "Configure", "Configure"};
             float aw = a.small.width(act[rows[i].action]);
             a.small.draw(r, act[rows[i].action], px + pw - 48 - aw, ry + 30, hot ? kCyan : kTextDim);
             if ((hover && click) || (hot && enter)) settings_action(a, rows[i].action);
@@ -765,9 +859,9 @@ static void frame(App& a, bool click, int nav, bool enter, bool back) {
         Button bb = make_btn("Back", px + pw - 220, py + ph - 76, 180, 50);
         bool bh = draw_button(a, bb, a.focus == n - 1);
         if (bh) a.focus = n - 1;
-        if ((bh && click) || (a.focus == n - 1 && enter) || back) { a.screen = Screen::Main; a.focus = 1; }
+        if ((bh && click) || (a.focus == n - 1 && enter) || back) { a.screen = Screen::Main; a.focus = 2; }
         // still allow the main menu to be seen on the left
-        for (int i = 0; i < (int)a.main_buttons.size(); i++) draw_button(a, a.main_buttons[i], i == 1, false);
+        for (int i = 0; i < (int)a.main_buttons.size(); i++) draw_button(a, a.main_buttons[i], i == 2, false);
         break;
     }
     case Screen::Credits: {
@@ -781,26 +875,32 @@ static void frame(App& a, bool click, int nav, bool enter, bool back) {
         }
         Button bb = make_btn("Back", px + pw - 220, py + ph - 76, 180, 50);
         bool bh = draw_button(a, bb, true);
-        if ((bh && click) || enter || back) { a.screen = Screen::Main; a.focus = 2; }
-        for (int i = 0; i < (int)a.main_buttons.size(); i++) draw_button(a, a.main_buttons[i], i == 2, false);
+        if ((bh && click) || enter || back) { a.screen = Screen::Main; a.focus = 3; }
+        for (int i = 0; i < (int)a.main_buttons.size(); i++) draw_button(a, a.main_buttons[i], i == 3, false);
         break;
     }
     case Screen::Building: {
         BuildProgress p;
         { std::lock_guard<std::mutex> l(a.bm); p = a.progress; }
-        float px = 472, py = 190, pw = 770, ph = 330;
-        draw_panel_art(a, "building_art", a.dt);
+        // With slides: a compact panel along the bottom and the slideshow above it.
+        // Without: the original panel in the middle over the building art.
+        const bool slides = !a.slides.empty();
+        float px = 472, pw = 770, ph = slides ? 232 : 330;
+        float py = slides ? H - 48 - 12 - ph : 190;
+        if (slides) { a.art_key.clear(); draw_slideshow(a, a.dt); }
+        else draw_panel_art(a, "building_art", a.dt);
         draw_panel(a, px, py, pw, ph, "BUILDING GEIST");
-        a.body.draw(r, "Recompiling your disc into a native PC game. This happens once.", px + 40, py + 116, kTextDim);
+        const float y_desc = slides ? 94 : 116, y_stage = slides ? 126 : 152, y_bar = slides ? 150 : 190;
+        a.body.draw(r, "Recompiling your disc into a native PC game. This happens once.", px + 40, py + y_desc, kTextDim);
         const char* stages[] = {"", "Verify disc", "Recompile", "Compile", "Link", "Finish"};
         for (int s = 1; s <= 5; s++) {
             float sx = px + 40 + (s - 1) * 146;
             Color c = s < p.stage ? kGood : s == p.stage ? kCyan : Color{90, 110, 140, 255};
-            ui::arc(r, sx + 8, py + 152, 7, 0, 6.2832f, 2, c);
-            if (s < p.stage) ui::glow(r, sx + 8, py + 152, 4, c);
-            a.small.draw(r, stages[s], sx + 24, py + 159, c);
+            ui::arc(r, sx + 8, py + y_stage, 7, 0, 6.2832f, 2, c);
+            if (s < p.stage) ui::glow(r, sx + 8, py + y_stage, 4, c);
+            a.small.draw(r, stages[s], sx + 24, py + y_stage + 7, c);
         }
-        float bx = px + 40, by = py + 190, bw = pw - 80, bh = 26;
+        float bx = px + 40, by = py + y_bar, bw = pw - 80, bh = slides ? 22 : 26;
         ui::rect(r, bx, by, bw, bh, {10, 30, 60, 255});
         float fw = bw * p.fraction;
         ui::hgradient(r, bx, by, fw, bh, {30, 110, 230, 255}, {110, 220, 255, 255});
@@ -808,9 +908,10 @@ static void frame(App& a, bool click, int nav, bool enter, bool back) {
         ui::poly_outline(r, {{bx, by}, {bx + bw, by}, {bx + bw, by + bh}, {bx, by + bh}}, 1.5f, {80, 160, 240, 200});
         char pct[16];
         snprintf(pct, sizeof pct, "%d%%", (int)(p.fraction * 100));
-        a.body.draw(r, pct, bx + bw - a.body.width(pct), by + bh + 30, kText);
-        a.small.draw(r, shorten_path(a.small, p.message, bw - 90), bx, by + bh + 28, kTextDim);
-        Button cb = make_btn(a.cancel ? "Cancelling..." : "Cancel", px + pw - 220, py + ph - 70, 180, 48);
+        a.body.draw(r, pct, bx + bw - a.body.width(pct), by + bh + (slides ? 26 : 30), kText);
+        a.small.draw(r, shorten_path(a.small, p.message, bw - 90), bx, by + bh + (slides ? 24 : 28), kTextDim);
+        Button cb = slides ? make_btn(a.cancel ? "Cancelling..." : "Cancel", px + pw - 200, py + 22, 170, 42)
+                           : make_btn(a.cancel ? "Cancelling..." : "Cancel", px + pw - 220, py + ph - 70, 180, 48);
         bool ch = draw_button(a, cb, true, !a.cancel);
         if ((ch && click) || back) a.cancel = true;
         for (int i = 0; i < (int)a.main_buttons.size(); i++) draw_button(a, a.main_buttons[i], false, false);
@@ -901,6 +1002,21 @@ static bool load_assets(App& a) {
         App::Art art;
         if (load_image(a.r, f(it->second.c_str()), art.tex, art.w, art.h)) a.art[key] = art;
     }
+    // Build slideshow: every PNG / JPEG in assets/slides, in name order.
+    {
+        std::vector<fs::path> files;
+        std::error_code ec;
+        for (auto& e : fs::directory_iterator(fs::u8path(dir) / "slides", ec)) {
+            auto ext = e.path().extension().u8string();
+            for (auto& ch : ext) ch = (char)tolower((unsigned char)ch);
+            if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") files.push_back(e.path());
+        }
+        std::sort(files.begin(), files.end());
+        for (auto& fp : files) {
+            App::Art art;
+            if (load_image(a.r, read_file(fp.u8string()), art.tex, art.w, art.h)) a.slides.push_back(art);
+        }
+    }
     return true;
 }
 
@@ -970,6 +1086,9 @@ int main(int argc, char** argv) {
     if (shot) {  // testing: GEIST_SCREEN=main|settings|credits|building|message
         std::string which = getenv("GEIST_SCREEN") ? getenv("GEIST_SCREEN") : "main";
         a.t = 4.0f;
+        if (which == "report") { a.screen=Screen::Report; a.report.open(a.paths.root,kVersion); }
+        if (which == "controls") {a.screen=Screen::Controls;a.controls.open(controls_path(a),controls::factory);}
+        if(which=="graphics"||which=="audio"){a.options.open((fs::u8path(a.paths.game)/"settings.ini").u8string(),which=="audio");a.screen=Screen::Options;}
         if (which == "settings") a.screen = Screen::Settings;
         if (which == "credits") a.screen = Screen::Credits;
         if (which == "building") { a.screen = Screen::Building; a.progress = {3, 5, 0.47f, "Compiling 27 of 60"}; }
@@ -991,6 +1110,11 @@ int main(int argc, char** argv) {
         int nav = 0;
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if(a.screen==Screen::Controls && e.type!=SDL_QUIT && a.controls.event(e)) {
+                if(e.type==SDL_MOUSEBUTTONDOWN)a.controls_ignore_release=true;
+                continue;
+            }
+            if(a.controls_ignore_release&&e.type==SDL_MOUSEBUTTONUP){a.controls_ignore_release=false;continue;}
             switch (e.type) {
             case SDL_QUIT: a.running = false; break;
             case SDL_MOUSEMOTION: {
@@ -1010,7 +1134,16 @@ int main(int argc, char** argv) {
                     } else click = true;
                 }
                 break;
+            case SDL_TEXTINPUT:
+                if (a.screen == Screen::Report) a.report.event(e);
+                break;
             case SDL_KEYDOWN:
+                if (a.screen == Screen::Report && a.report.event(e)) break;
+                if(e.key.keysym.scancode==SDL_SCANCODE_LEFT||e.key.keysym.scancode==SDL_SCANCODE_RIGHT){
+                    int d=e.key.keysym.scancode==SDL_SCANCODE_LEFT?-1:1;
+                    if(a.screen==Screen::Controls){a.controls.edit_option("gain",d*.01f);break;}
+                    if(a.screen==Screen::Options&&a.options.focus<(int)a.options.options.size()){a.options.change(a.options.focus,d);break;}
+                }
                 switch (e.key.keysym.scancode) {
                 case SDL_SCANCODE_UP: case SDL_SCANCODE_W: nav = -1; break;
                 case SDL_SCANCODE_DOWN: case SDL_SCANCODE_S: case SDL_SCANCODE_TAB: nav = 1; break;
@@ -1024,6 +1157,11 @@ int main(int argc, char** argv) {
                 if (!pad) pad = SDL_GameControllerOpen(e.cdevice.which);
                 break;
             case SDL_CONTROLLERBUTTONDOWN:
+                if(e.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_LEFT||e.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_RIGHT){
+                    int d=e.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_LEFT?-1:1;
+                    if(a.screen==Screen::Controls){a.controls.edit_option("gain",d*.01f);break;}
+                    if(a.screen==Screen::Options&&a.options.focus<(int)a.options.options.size()){a.options.change(a.options.focus,d);break;}
+                }
                 switch (e.cbutton.button) {
                 case SDL_CONTROLLER_BUTTON_DPAD_UP: nav = -1; break;
                 case SDL_CONTROLLER_BUTTON_DPAD_DOWN: nav = 1; break;

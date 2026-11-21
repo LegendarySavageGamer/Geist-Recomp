@@ -48,7 +48,7 @@ LIBS=$(cd "$B" && ninja -t commands geist.exe | tail -1 | grep -o ' -l[A-Za-z0-9
 SHA=$(grep -o 'DOL_SHA1 [0-9a-f]*' "$ROOT/CMakeLists.txt" | cut -d' ' -f2)
 cat > "$OUT/manifest.ini" <<EOF
 # Geist Recompiled SDK manifest. Read by GeistLauncher.exe.
-sdk_version=1.0.7
+sdk_version=1.1.1-performance-wip.20261120
 title=Geist
 disc_id=GITE01
 disc_name=Geist (USA), revision 0

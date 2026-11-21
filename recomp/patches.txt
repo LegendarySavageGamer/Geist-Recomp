@@ -21,3 +21,10 @@
 # Infinite Time (3): fsubs f0,f2,f0, then the old value (f2) is stored back instead.
 8020DA28 { extern int gcn_cheat_on(int); if (!gcn_cheat_on(3)) { double v = (double)(float)(c->f[2].d - c->f[0].d); c->f[0].d = v; c->ps1[0] = v; c->fprf_v = v; c->fprf_pending = 2; } }
 8020DA2C { extern int gcn_cheat_on(int); uint32_t ea = (c->r[25] + (uint32_t)16); STF32(ea, gcn_cheat_on(3) ? c->f[2].d : c->f[0].d); }
+
+# Desktop aspect applied before camera projection and culling.
+80065E6C { extern void gcn_geist_mouselook(CPU*, uint32_t, int); gcn_geist_mouselook(c,c->r[30],(int)c->r[31]); c->r[0]=c->r[31]^0x80000000u; }
+800168A8 { extern float gcn_desktop_aspect_scale(void); double v = (double)(float)(LDF32(c->r[13] + (uint32_t)-32768) * gcn_desktop_aspect_scale()); c->f[0].d = v; c->ps1[0] = v; }
+# Mouse look for possessed bodies and the ghost (src/geist_mouse.cpp).
+80076F6C { extern double gcn_yaw_load(CPU*,uint32_t,uint32_t); double v = gcn_yaw_load(c,0x80076F6Cu,c->r[28]+(uint32_t)1680); c->f[0].d = v; c->ps1[0] = v; }
+80076F80 { extern void gcn_yaw_store_turn(CPU*,uint32_t,double); gcn_yaw_store_turn(c,c->r[28]+(uint32_t)1680,c->f[0].d); }

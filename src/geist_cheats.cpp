@@ -9,6 +9,7 @@
 #include "cheats.h"
 #include "runtime.h"
 
+namespace gx { void render_set_hud_multiplayer(bool on); }
 namespace {
 
 // The order fixes the ids patches.txt uses.
@@ -67,6 +68,7 @@ void on_read(unsigned long long off, unsigned) {
         if (off >= s.start && off < s.end) {
             if (s.kind == Multiplayer) gcn_cheats_set_allowed(false, "Cheats are off in multiplayer.");
             else gcn_cheats_set_allowed(true, "");
+            gx::render_set_hud_multiplayer(s.kind == Multiplayer);   // HUD styles are story-only for now
             return;
         }
 }

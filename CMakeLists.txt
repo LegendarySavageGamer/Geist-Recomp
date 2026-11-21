@@ -15,5 +15,5 @@ gcn_add_game(
   TABLES ${CMAKE_CURRENT_SOURCE_DIR}/recomp
   IMAGE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/orig
   FPS 60
-  SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_preference.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/geist_romfont.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/geist_cheats.cpp
+  SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_preference.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/geist_romfont.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/geist_cheats.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/geist_mouse.cpp
 )

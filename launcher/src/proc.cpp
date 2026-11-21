@@ -56,6 +56,20 @@ int proc_run(const std::vector<std::string>& argv, const std::string& log, const
     std::wstring wcwd = wide(cwd);
     BOOL ok = CreateProcessW(nullptr, cl.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
                              wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
+    const DWORD start_error = ok ? ERROR_SUCCESS : GetLastError();
+    if (!ok && out != INVALID_HANDLE_VALUE) {
+        wchar_t message[1024] = {};
+        FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                       nullptr, start_error, 0, message, 1024, nullptr);
+        const std::wstring detail = L"Could not start " + quote(wide(argv.front())) +
+                                   L" (Windows error " + std::to_wstring(start_error) + L"): " +
+                                   message + L"\r\n";
+        const int size = WideCharToMultiByte(CP_UTF8, 0, detail.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string utf8(size, 0);
+        WideCharToMultiByte(CP_UTF8, 0, detail.c_str(), -1, utf8.data(), size, nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(out, utf8.data(), static_cast<DWORD>(utf8.size() - 1), &written, nullptr);
+    }
     if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
     if (!ok) return -1;
     WaitForSingleObject(pi.hProcess, INFINITE);

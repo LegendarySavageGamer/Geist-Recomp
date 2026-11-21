@@ -1,0 +1,10 @@
+{$REPORT_DOMAIN} {
+    header {
+        -Server
+        X-Content-Type-Options nosniff
+        Cache-Control no-store
+    }
+    reverse_proxy reports:8080 {
+        header_up X-Forwarded-For {remote_host}
+    }
+}

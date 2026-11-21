@@ -196,6 +196,7 @@ BuildPaths BuildPaths::from_root(const std::string& root) {
     p.root = root;
     p.sdk = join(root, "sdk");
     p.toolchain = join(root, "toolchain");
+    if (const char* e = getenv("GEIST_TOOLCHAIN")) p.toolchain = e;
 #ifdef _WIN32
     p.python = join(join(join(p.toolchain, "python"), "bin"), "python.exe");  // llvm-mingw's own Python 3.12
 #else
@@ -204,7 +205,6 @@ BuildPaths BuildPaths::from_root(const std::string& root) {
     p.work = join(root, "work");
     p.game = join(root, "game");
     // Development overrides (testing the pipeline with a cross toolchain).
-    if (const char* e = getenv("GEIST_TOOLCHAIN")) p.toolchain = e;
     if (const char* e = getenv("GEIST_PYTHON")) p.python = e;
     return p;
 }
@@ -291,6 +291,26 @@ bool build_game(const BuildPaths& p, const std::string& iso, std::function<void(
         return false;
     };
 
+    // Check the bundled tools before extracting any game data.
+#ifdef _WIN32
+    const std::vector<std::string> required = {
+        p.python,
+        tool(p, manifest_get(p, "cc", "x86_64-w64-mingw32-clang")),
+        tool(p, manifest_get(p, "cxx", "x86_64-w64-mingw32-clang++")),
+        join(join(p.sdk, "recomp"), "recomp.py"),
+        join(p.sdk, "symbols.txt"),
+        join(join(p.sdk, "lib"), "libgeist_runtime.a"),
+    };
+    for (const auto& file : required) {
+        if (!fs::is_regular_file(fs::u8path(file), ec))
+            return fail("This installation is missing a required build file. Extract the complete "
+                        "Geist Recompiled 1.1.0 package, including its toolchain folder. Missing file: " + file);
+    }
+    if (proc_run({p.python, "-I", "-c", "import struct, hashlib, concurrent.futures"}, log, p.work) != 0)
+        return fail("The bundled Python could not start. Extract the complete Geist Recompiled package. "
+                    "See work/build.log for the Windows error.");
+#endif
+
     // 1. Verify the player's disc and write their main.dol to work/.
     report(1, 0, "Checking your disc...");
     DiscCheck dc = check_disc(p, iso);
@@ -312,7 +332,7 @@ bool build_game(const BuildPaths& p, const std::string& iso, std::function<void(
     const std::string gen = join(p.work, "gen");
     fs::create_directories(fs::u8path(gen), ec);
     {
-        std::vector<std::string> cmd = {p.python, join(join(p.sdk, "recomp"), "recomp.py"), join(p.work, "main.dol"),
+        std::vector<std::string> cmd = {p.python, "-E", "-s", join(join(p.sdk, "recomp"), "recomp.py"), join(p.work, "main.dol"),
                                         join(p.sdk, "symbols.txt"), gen, join(p.sdk, "tables")};
         int rc = proc_run(cmd, log, p.work);
         if (rc != 0) return fail("The recompiler failed (code " + std::to_string(rc) + "). See work\\build.log.");
